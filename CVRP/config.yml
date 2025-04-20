@@ -1,0 +1,57 @@
+name: CVRP
+use_cuda: True
+cuda_device_num: 0
+logger: wandb   # [no_logger, wandb]
+
+vrplib_set: X   # [XXL, X]
+
+# load_checkpoint: null # set to null if training from scratch
+load_checkpoint: weights/ReLD/model_epoch_90.pt # ReLD
+
+######################
+model_params:
+  embedding_dim: 128
+  encoder_layer_num: 6 # ReLD: 6
+  head_num: 8
+  qkv_dim: 16
+  forcing_first_step: False
+  logit_clipping: 50
+  ff_hidden_dim: 512
+  eval_type: 'greedy'
+
+######################
+# params for training
+train_params:
+  problem_size: 100
+  multiple_width: 100
+  start_steps: 0
+  train_steps: 450000
+  train_batch_size: 120
+  learning_rate: 0.0001
+  log_step: 5000 # num_epoch = train_steps // log_step
+  scheduler_param:
+    milestones: [350000, 400000]
+    gamma: 0.1
+
+#######################
+# params for testing   
+test_params:
+  problem_size: &problem_size 100
+  pomo_size: &pomo_size 100 # number of trajectories to sample for each instance
+  test_episodes: 10000
+  test_batch_size: 1000
+  augmentation_enable: True
+  aug_factor: 8
+  test_data_load:
+    enable: False # use False to test on all the test data
+    filename: ./data/vrp100_test_lkh.txt # path to test datase, valid only if enable=True
+
+env_params:
+  problem_size: *problem_size
+  pomo_size: *pomo_size
+
+#######################
+logger_params:
+  log_file: 
+    desc: 'train'
+    filename: 'log.txt'

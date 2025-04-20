@@ -1,12 +1,8 @@
-# Rethinking Light Decoder-based Solvers for Vehicle Routing Problems
+# Rethinking Light Decoder-based Solvers for Vehicle Routing Problems (ReLD)
 
 
 ## Paper
-The paper associated with this codebase can be found here [Rethinking Light Decoder-based Solvers for Vehicle Routing Problems][paper-link]. 
-
-## Code
-The code will be released soon.
-
+The paper associated with this codebase can be found here [Rethinking Light Decoder-based Solvers for Vehicle Routing Problems][paper-link].
 
 ## Reference
 If you find this codebase useful, please consider citing our paper as:
