@@ -15,7 +15,8 @@ def args2dict(args):
                     "qkv_dim": args.qkv_dim, "head_num": args.head_num, "logit_clipping": args.logit_clipping,
                     "ff_hidden_dim": args.ff_hidden_dim, "num_experts": args.num_experts, "eval_type": args.eval_type,
                     "norm": args.norm, "norm_loc": args.norm_loc, "expert_loc": args.expert_loc, "problem": args.problem,
-                    "topk": args.topk, "routing_level": args.routing_level, "routing_method": args.routing_method, "ffidt": args.ffidt}
+                    "topk": args.topk, "routing_level": args.routing_level, "routing_method": args.routing_method, "ffidt": args.ffidt,
+                    "use_now_future": args.use_now_future, "future_dim": args.future_dim, "future_heads": args.future_heads}
     optimizer_params = {"optimizer": {"lr": args.lr, "weight_decay": args.weight_decay},
                         "scheduler": {"milestones": args.milestones, "gamma": args.gamma}}
     trainer_params = {"epochs": args.epochs, "train_episodes": args.train_episodes,
@@ -53,6 +54,9 @@ if __name__ == "__main__":
     parser.add_argument('--routing_level', type=str, default="node", choices=["node", "instance", "problem"], help="routing level for MOE")
     parser.add_argument('--routing_method', type=str, default="input_choice", choices=["input_choice", "expert_choice", "soft_moe", "random"], help="only for token-level and instance-level routing")
     parser.add_argument('--ffidt', action='store_true')
+    parser.add_argument('--use_now_future', action='store_true')
+    parser.add_argument('--future_dim', type=int, default=128)
+    parser.add_argument('--future_heads', type=int, default=8)
 
     # optimizer_params
     parser.add_argument('--lr', type=float, default=1e-4)

@@ -15,7 +15,8 @@ def args2dict(args):
                     "qkv_dim": args.qkv_dim, "head_num": args.head_num, "logit_clipping": args.logit_clipping,
                     "ff_hidden_dim": args.ff_hidden_dim, "num_experts": args.num_experts, "eval_type": args.eval_type,
                     "norm": args.norm, "norm_loc": args.norm_loc, "expert_loc": args.expert_loc, "problem": None,
-                    "topk": args.topk, "routing_level": args.routing_level, "routing_method": args.routing_method, "ffidt": args.ffidt}
+                    "topk": args.topk, "routing_level": args.routing_level, "routing_method": args.routing_method, "ffidt": args.ffidt,
+                    "use_now_future": args.use_now_future, "future_dim": args.future_dim, "future_heads": args.future_heads}
     tester_params = {"checkpoint": args.checkpoint, "test_episodes": args.test_episodes, "test_batch_size": args.test_batch_size,
                      "sample_size": args.sample_size, "aug_factor": args.aug_factor, "aug_batch_size": args.aug_batch_size,
                      "test_set_path": args.test_set_path, "test_set_opt_sol_path": args.test_set_opt_sol_path,
@@ -54,6 +55,9 @@ if __name__ == "__main__":
     parser.add_argument('--routing_level', type=str, default="node", choices=["node", "instance", "problem"], help="routing level for MOE")
     parser.add_argument('--routing_method', type=str, default="input_choice", choices=["input_choice", "expert_choice", "soft_moe", "random"], help="only activate for instance-level and token-level routing")
     parser.add_argument('--ffidt', action='store_true')
+    parser.add_argument('--use_now_future', action='store_true')
+    parser.add_argument('--future_dim', type=int, default=128)
+    parser.add_argument('--future_heads', type=int, default=8)
 
     # tester_params
     parser.add_argument('--checkpoint', type=str, default="./checkpoint/epoch-5000.pt", help="load pretrained model to evaluate")
