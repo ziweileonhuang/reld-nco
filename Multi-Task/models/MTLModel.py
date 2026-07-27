@@ -16,6 +16,7 @@ class MTLModel(nn.Module):
         self.encoder = MTL_Encoder(**model_params)
         self.decoder = MTL_Decoder(**model_params)
         self.encoded_nodes = None  # shape: (batch, problem+1, EMBEDDING_DIM)
+        self._visited = None
         self.device = torch.device('cuda', torch.cuda.current_device()) if 'device' not in model_params.keys() else model_params['device']
         # assert self.model_params['norm'] == "batch", "The original MTLModel implementation uses batch normalization."
 
@@ -41,6 +42,17 @@ class MTLModel(nn.Module):
     def forward(self, state, selected=None):
         batch_size = state.BATCH_IDX.size(0)
         pomo_size = state.BATCH_IDX.size(1)
+        if state.selected_count == 0:
+            self._visited = torch.zeros(
+                batch_size,
+                pomo_size,
+                self.encoded_nodes.size(1),
+                dtype=torch.bool,
+                device=self.encoded_nodes.device,
+            )
+        elif state.current_node is not None:
+            self._visited.scatter_(2, state.current_node[:, :, None], True)
+            self._visited[:, :, 0] = False
 
         if state.selected_count == 0:  # First Move, depot
             selected = torch.zeros(size=(batch_size, pomo_size), dtype=torch.long).to(self.device)
@@ -69,7 +81,12 @@ class MTLModel(nn.Module):
             # shape: (batch, pomo, embedding)
             attr = torch.cat((state.load[:, :, None], state.current_time[:, :, None], state.length[:, :, None], state.open[:, :, None]), dim=2)
             # shape: (batch, pomo, 4)
-            probs = self.decoder(encoded_last_node, attr, ninf_mask=state.ninf_mask)
+            probs = self.decoder(
+                encoded_last_node,
+                attr,
+                ninf_mask=state.ninf_mask,
+                visited_mask=self._visited,
+            )
             # shape: (batch, pomo, problem+1)
             if selected is None:
                 while True:
@@ -195,6 +212,49 @@ class EncoderLayer(nn.Module):
 # DECODER
 ########################################
 
+class Now_Future_PointerAttention(nn.Module):
+    """Status-aware dual-stream glimpse adapted to ReLD's POMO layout."""
+
+    def __init__(self, embed_dim=128, future_dim=128, future_heads=8):
+        super().__init__()
+        if future_dim % future_heads != 0:
+            raise ValueError("future_dim must be divisible by future_heads")
+        self.future_heads = future_heads
+        self.project_out = nn.Linear(embed_dim, embed_dim)
+        self.project_future_query = nn.Linear(embed_dim, future_dim, bias=False)
+        self.project_futures = nn.Linear(future_dim, embed_dim, bias=False)
+        self.gate_fc1 = nn.Linear(embed_dim + future_dim, 1, bias=False)
+        self.gate_fc2 = nn.Linear(1, embed_dim, bias=False)
+
+    def forward(
+        self,
+        query,
+        now_key,
+        now_value,
+        future_key,
+        future_value,
+        now_mask,
+        future_mask,
+    ):
+        now_raw = masked_multi_head_attention(
+            query, now_key, now_value, now_mask
+        )
+        now = self.project_out(now_raw)
+        query_flat = query.transpose(1, 2).reshape(
+            query.size(0), query.size(2), -1
+        )
+        future_query = reshape_by_heads(
+            self.project_future_query(query_flat), self.future_heads
+        )
+        future = masked_multi_head_attention(
+            future_query, future_key, future_value, future_mask
+        )
+        gate = torch.sigmoid(
+            self.gate_fc2(F.relu(self.gate_fc1(torch.cat([now, future], -1))))
+        )
+        return now + gate * self.project_futures(future)
+
+
 class MTL_Decoder(nn.Module):
     def __init__(self, **model_params):
         super().__init__()
@@ -211,6 +271,19 @@ class MTL_Decoder(nn.Module):
         self.Wv = nn.Linear(embedding_dim, head_num * qkv_dim, bias=False)
 
         self.multi_head_combine = nn.Linear(head_num * qkv_dim, embedding_dim)
+        self.use_now_future = self.model_params.get("use_now_future", False)
+        future_dim = self.model_params.get("future_dim", embedding_dim)
+        future_heads = self.model_params.get("future_heads", head_num)
+        if self.use_now_future:
+            self.now_future_pointer = Now_Future_PointerAttention(
+                embedding_dim, future_dim, future_heads
+            )
+            self.project_future_node_embeddings = nn.Linear(
+                embedding_dim, 2 * future_dim, bias=False
+            )
+        else:
+            self.now_future_pointer = None
+            self.project_future_node_embeddings = None
 
         if self.ffidt:
             self.attr_mapping = nn.Linear(4, embedding_dim, bias=False)
@@ -219,6 +292,8 @@ class MTL_Decoder(nn.Module):
         self.k = None  # saved key, for multi-head attention
         self.v = None  # saved value, for multi-head_attention
         self.single_head_key = None  # saved, for single-head attention
+        self.future_key = None
+        self.future_val = None
         # self.q1 = None  # saved q1, for multi-head attention
         # self.q2 = None  # saved q2, for multi-head attention
 
@@ -231,6 +306,15 @@ class MTL_Decoder(nn.Module):
         # shape: (batch, head_num, problem+1, qkv_dim)
         self.single_head_key = encoded_nodes.transpose(1, 2)
         # shape: (batch, embedding, problem+1)
+        if self.use_now_future:
+            future_key, future_val = self.project_future_node_embeddings(
+                encoded_nodes
+            ).chunk(2, dim=-1)
+            future_heads = self.model_params.get(
+                "future_heads", self.model_params["head_num"]
+            )
+            self.future_key = reshape_by_heads(future_key, future_heads)
+            self.future_val = reshape_by_heads(future_val, future_heads)
 
     def set_q1(self, encoded_q1):
         # encoded_q.shape: (batch, n, embedding)  # n can be 1 or pomo
@@ -244,7 +328,7 @@ class MTL_Decoder(nn.Module):
         self.q2 = reshape_by_heads(self.Wq_2(encoded_q2), head_num=head_num)
         # shape: (batch, head_num, n, qkv_dim)
 
-    def forward(self, encoded_last_node, attr, ninf_mask):
+    def forward(self, encoded_last_node, attr, ninf_mask, visited_mask=None):
         # encoded_last_node.shape: (batch, pomo, embedding)
         # attr.shape: (batch, pomo, 4)
         # ninf_mask.shape: (batch, pomo, problem)
@@ -264,10 +348,26 @@ class MTL_Decoder(nn.Module):
         q = q_last
         # shape: (batch, head_num, pomo, qkv_dim)
 
-        out_concat = multi_head_attention(q, self.k, self.v, rank3_ninf_mask=ninf_mask)
-        # shape: (batch, pomo, head_num*qkv_dim)
-
-        mh_atten_out = self.multi_head_combine(out_concat)
+        if self.use_now_future:
+            if visited_mask is None:
+                raise ValueError("now/future ReLD requires a visited mask")
+            now_mask = ~torch.isneginf(ninf_mask)
+            future_mask = torch.isneginf(ninf_mask) & (~visited_mask)
+            future_mask[..., 0] = False
+            mh_atten_out = self.now_future_pointer(
+                q,
+                self.k,
+                self.v,
+                self.future_key,
+                self.future_val,
+                now_mask,
+                future_mask,
+            )
+        else:
+            out_concat = multi_head_attention(
+                q, self.k, self.v, rank3_ninf_mask=ninf_mask
+            )
+            mh_atten_out = self.multi_head_combine(out_concat)
         # shape: (batch, pomo, embedding)
 
         if self.ffidt:
@@ -313,6 +413,20 @@ def reshape_by_heads(qkv, head_num):
     # shape: (batch, head_num, n, key_dim)
 
     return q_transposed
+
+
+def masked_multi_head_attention(q, k, v, visibility):
+    """Boolean-masked MHA with zero output for an empty visibility set."""
+    score = torch.matmul(q, k.transpose(2, 3))
+    score = score / (q.size(-1) ** 0.5)
+    empty = ~visibility.any(dim=-1, keepdim=True)
+    safe_mask = visibility.clone()
+    safe_mask[..., 0] |= empty.squeeze(-1)
+    score = score.masked_fill(~safe_mask[:, None, :, :], float("-inf"))
+    weights = F.softmax(score, dim=-1)
+    out = torch.matmul(weights, v)
+    out = out.transpose(1, 2).reshape(q.size(0), q.size(2), -1)
+    return out.masked_fill(empty, 0)
 
 
 def multi_head_attention(q, k, v, rank2_ninf_mask=None, rank3_ninf_mask=None):
